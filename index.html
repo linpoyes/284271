@@ -85,21 +85,31 @@ const GAS_URL = "https://script.google.com/macros/s/AKfycbyXe9tsuNC4eyzk3mJ6ArFa
 var gasCall = function(data) {
   var url = GAS_URL;
   if (data) url += "?data=" + encodeURIComponent(JSON.stringify(data));
+  console.log("[GAS] calling:", data ? data.action : "fetchAll", "url length:", url.length);
   return new Promise(function(resolve) {
     var done = false;
-    var timer = setTimeout(function() { if (!done) { done = true; resolve({ error: "timeout" }); } }, 15000);
-    fetch(url, { redirect: "follow" })
-      .then(function(res) { return res.text(); })
+    var timer = setTimeout(function() { if (!done) { done = true; console.warn("[GAS] timeout"); resolve({ error: "timeout" }); } }, 15000);
+    fetch(url, { redirect: "follow", mode: "cors" })
+      .then(function(res) {
+        console.log("[GAS] response status:", res.status, "type:", res.type);
+        if (res.type === "opaque" || res.type === "opaqueredirect") {
+          if (!done) { done = true; clearTimeout(timer); resolve({ ok: true, note: "opaque" }); }
+          return "";
+        }
+        return res.text();
+      })
       .then(function(text) {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        console.log("[GAS] response text:", text.slice(0, 300));
         try { resolve(JSON.parse(text)); } catch(e) { resolve({ error: "parse", raw: text.slice(0, 200) }); }
       })
       .catch(function(e) {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        console.error("[GAS] fetch error:", e.toString());
         resolve({ error: e.toString() });
       });
   });
