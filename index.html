@@ -1,0 +1,2681 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>哈根達斯 雪糕買四送四 預購專區</title>
+<meta name="description" content="7-ELEVEN 哈根達斯雪糕買四送四預購系統">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍦</text></svg>">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Noto Sans TC', sans-serif; -webkit-font-smoothing: antialiased; }
+#root { min-height: 100vh; background: linear-gradient(180deg, #0A1628 0%, #0D2137 30%, #0A1628 100%); }
+input, textarea, button { -webkit-appearance: none; }
+</style>
+</head>
+<body>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:#00D4AA;font-family:sans-serif;font-size:16px;text-align:center"><div><div style="font-size:48px;margin-bottom:12px">🍦</div>載入中...</div></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>
+// Version check - clear stale state
+if (localStorage.getItem("app_version_ys") !== "v4") {
+  localStorage.removeItem("haagen-stock-ys");
+  localStorage.removeItem("haagen-orders-ys");
+  localStorage.setItem("app_version_ys", "v4");
+}
+const {
+  useState,
+  useEffect,
+  useCallback,
+  useRef
+} = React;
+
+// --- Constants ---
+const FLAVORS = [{
+  id: "strawberry",
+  name: "草莓雪糕",
+  sku: "352396",
+  emoji: "🍓",
+  color: "#FADADD"
+}, {
+  id: "vanilla_caramel",
+  name: "香草焦糖脆杏仁雪糕",
+  sku: "352601",
+  emoji: "🍦",
+  color: "#F5E6CA"
+}, {
+  id: "matcha",
+  name: "抹茶脆果仁雪糕",
+  sku: "432226",
+  emoji: "🍵",
+  color: "#C8E6C0"
+}, {
+  id: "cookies_cream",
+  name: "淇淋巧酥雪糕",
+  sku: "432281",
+  emoji: "🍪",
+  color: "#E8DDD0"
+}, {
+  id: "chocolate_almond",
+  name: "巧克力脆杏仁雪糕",
+  sku: "502311",
+  emoji: "🍫",
+  color: "#8B6C5C"
+}, {
+  id: "macadamia",
+  name: "夏威夷脆果仁雪糕",
+  sku: "611910",
+  emoji: "🌰",
+  color: "#DEC8A0"
+}];
+const PRICE_8_PACK = 516; // 買四送四 8支 $516
+const PRICE_PER_UNIT = 129; // 原價每支 $129（$1032/8）
+const ADMIN_PIN = "a284271"; // 門市端密碼
+
+// === GAS API ===
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwxNufDCVemKkNW8WUu-dzDcvQj000RA9z_D0rbFh4_SOAxTHiSHTeuwdjJ3Op-VyAI/exec";
+
+// All communication via GET (avoids CORS issues with GAS POST redirect)
+var gasCall = function(data) {
+  var url = GAS_URL;
+  if (data) url += "?data=" + encodeURIComponent(JSON.stringify(data));
+  return new Promise(function(resolve) {
+    var done = false;
+    var timer = setTimeout(function() { if (!done) { done = true; resolve({ error: "timeout" }); } }, 15000);
+    fetch(url, { redirect: "follow" })
+      .then(function(res) { return res.text(); })
+      .then(function(text) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try { resolve(JSON.parse(text)); } catch(e) { resolve({ error: "parse", raw: text.slice(0, 200) }); }
+      })
+      .catch(function(e) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve({ error: e.toString() });
+      });
+  });
+};
+var fetchData = function() { return gasCall(null); };
+const STORAGE_KEY = "haagen-stock-ys";
+const ORDERS_KEY = "haagen-orders-ys";
+
+// --- Helpers ---
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+function getOrderNumber(orders) {
+  return String(orders.length + 1).padStart(3, "0");
+}
+function getInitialStock() {
+  const stock = {};
+  FLAVORS.forEach(f => {
+    stock[f.id] = 0;
+  });
+  return stock;
+}
+
+// --- Main App ---
+function App() {
+  const [mode, setMode] = useState("customer");
+  const [stock, setStock] = useState(function() {
+    try { var s = localStorage.getItem(STORAGE_KEY); return s ? JSON.parse(s) : getInitialStock(); } catch(e) { return getInitialStock(); }
+  });
+  const [orders, setOrders] = useState(function() {
+    try { var o = localStorage.getItem(ORDERS_KEY); return o ? JSON.parse(o) : []; } catch(e) { return []; }
+  });
+  const [loading, setLoading] = useState(false);
+  const [pin, setPin] = useState("");
+  const [pinError, setPinError] = useState(false);
+  const [tapCount, setTapCount] = useState(0);
+  const tapTimer = useRef(null);
+
+  // Sync from GAS in background (non-blocking)
+  const loadData = useCallback(function() {
+    fetchData().then(function(data) {
+      if (data && data.ok) {
+        setStock(data.stock && Object.keys(data.stock).length > 0 ? data.stock : getInitialStock());
+        setOrders(data.orders || []);
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data.stock)); } catch(e) {}
+        try { localStorage.setItem(ORDERS_KEY, JSON.stringify(data.orders)); } catch(e) {}
+      }
+    }).catch(function(e) { console.warn("GAS sync failed:", e); });
+  }, []);
+  useEffect(function() {
+    loadData();
+  }, [loadData]);
+
+  // Save helpers - update UI immediately, sync to GAS in background, cache locally
+  const saveStock = newStock => {
+    setStock(newStock);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock));
+    } catch (e) {}
+    gasCall({
+      action: "updateStock",
+      stock: newStock
+    }).catch(function(e) { console.error(e); });
+  };
+  const saveOrders = newOrders => {
+    setOrders(newOrders);
+    try {
+      localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders));
+    } catch (e) {}
+    gasCall({
+      action: "updateOrders",
+      orders: newOrders
+    }).catch(function(e) { console.error(e); });
+  };
+  const totalRemaining = stock ? Object.values(stock).reduce((a, b) => a + b, 0) : 0;
+  const totalSold = orders ? orders.reduce((sum, o) => sum + o.total, 0) : 0;
+  const totalStock = totalRemaining + totalSold;
+  if (loading) return /*#__PURE__*/React.createElement(LoadingScreen, null);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: "linear-gradient(180deg, #0A1628 0%, #0D2137 30%, #0A1628 100%)",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, /*#__PURE__*/React.createElement("link", {
+    href: "https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700;900&family=Pacifico&display=swap",
+    rel: "stylesheet"
+  }), /*#__PURE__*/React.createElement("header", {
+    style: {
+      background: "linear-gradient(135deg, #00B4DC 0%, #00D4AA 50%, #FFD93D 100%)",
+      padding: "22px 16px 16px",
+      textAlign: "center",
+      position: "relative",
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: "repeating-linear-gradient(110deg, transparent, transparent 30px, rgba(255,255,255,0.08) 30px, rgba(255,255,255,0.08) 60px)"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: "-30px",
+      right: "-20px",
+      width: "100px",
+      height: "100px",
+      background: "radial-gradient(circle, rgba(255,217,61,0.4) 0%, transparent 70%)",
+      borderRadius: "50%"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      zIndex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "11px",
+      letterSpacing: "6px",
+      color: "rgba(255,255,255,0.9)",
+      fontWeight: 500,
+      marginBottom: "4px",
+      cursor: "default",
+      userSelect: "none"
+    },
+    onClick: () => {
+      if (mode === "admin") return;
+      const next = tapCount + 1;
+      setTapCount(next);
+      clearTimeout(tapTimer.current);
+      if (next >= 5) {
+        setTapCount(0);
+        setMode("admin_locked");
+        setPin("");
+        setPinError(false);
+      } else {
+        tapTimer.current = setTimeout(() => setTapCount(0), 2000);
+      }
+    }
+  }, "H\xC4AGEN-DAZS"), /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontFamily: "'Pacifico', cursive",
+      fontSize: "24px",
+      fontWeight: 400,
+      color: "#fff",
+      margin: "0 0 2px",
+      textShadow: "0 2px 10px rgba(0,0,0,0.2)"
+    }
+  }, "\uD83C\uDF66 哈根達斯雪糕\u8CB7\u56DB\u9001\u56DB"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "11px",
+      color: "rgba(255,255,255,0.75)",
+      fontWeight: 400,
+      marginBottom: "4px"
+    }
+  }, "\u6D3B\u52D5\u671F\u9593 4/10 ~ 4/14 \u30FB 8\u652F $1032 \u2192 $516"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "12px",
+      color: "rgba(255,255,255,0.85)",
+      fontWeight: 400
+    }
+  }, totalStock > 0 ? `限量 ${totalStock} 支 ・ 已售 ${totalSold} 支 ・ 剩餘 ${totalRemaining} 支` : "尚未設定庫存"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "10px auto 0",
+      maxWidth: "280px",
+      height: "5px",
+      background: "rgba(255,255,255,0.2)",
+      borderRadius: "3px",
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: `${totalStock > 0 ? totalSold / totalStock * 100 : 0}%`,
+      height: "100%",
+      background: "linear-gradient(90deg, #FFD93D, #FF6B6B)",
+      borderRadius: "2px",
+      transition: "width 0.5s ease"
+    }
+  })))), /*#__PURE__*/React.createElement("main", {
+    style: {
+      maxWidth: "480px",
+      margin: "0 auto",
+      padding: "0 0 80px"
+    }
+  }, mode === "customer" && /*#__PURE__*/React.createElement(CustomerView, {
+    stock: stock,
+    saveStock: saveStock,
+    setStock: setStock,
+    orders: orders,
+    saveOrders: saveOrders,
+    setOrders: setOrders,
+    loadData: loadData
+  }), mode === "admin_locked" && /*#__PURE__*/React.createElement(PinScreen, {
+    pin: pin,
+    setPin: setPin,
+    pinError: pinError,
+    onBack: () => setMode("customer"),
+    onSubmit: fullPin => {
+      if (fullPin === ADMIN_PIN) {
+        setMode("admin");
+        setPinError(false);
+      } else {
+        setPinError(true);
+      }
+    }
+  }), mode === "admin" && /*#__PURE__*/React.createElement(AdminView, {
+    stock: stock,
+    saveStock: saveStock,
+    orders: orders,
+    saveOrders: saveOrders,
+    onLogout: () => setMode("customer"),
+    loadData: loadData
+  })));
+}
+
+// --- Loading ---
+function LoadingScreen() {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: "linear-gradient(180deg, #0A1628, #0D2137)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "#00D4AA",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      fontSize: "16px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "48px",
+      marginBottom: "12px",
+      animation: "bounce 1s ease infinite"
+    }
+  }, "\uD83C\uDF66"), /*#__PURE__*/React.createElement("div", null, "\u8F09\u5165\u4E2D..."), /*#__PURE__*/React.createElement("style", null, `@keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }`)));
+}
+
+// --- PIN Screen ---
+function PinScreen({
+  pin,
+  setPin,
+  pinError,
+  onSubmit,
+  onBack
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "60px 20px",
+      textAlign: "center",
+      background: "linear-gradient(180deg, rgba(0,180,220,0.08) 0%, transparent 60%)",
+      minHeight: "70vh"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "56px",
+      marginBottom: "12px"
+    }
+  }, "\uD83C\uDF66"), /*#__PURE__*/React.createElement("h2", {
+    style: {
+      color: "#00B4DC",
+      fontSize: "18px",
+      fontWeight: 700,
+      margin: "0 0 6px"
+    }
+  }, "\u9580\u5E02\u7BA1\u7406\u7AEF"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: "#88B0C0",
+      fontSize: "13px",
+      margin: "0 0 28px"
+    }
+  }, "\u8ACB\u8F38\u5165\u7BA1\u7406\u5BC6\u78BC"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: "280px",
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: pin,
+    onChange: e => setPin(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter" && pin.length > 0) onSubmit(pin);
+    },
+    placeholder: "\u8F38\u5165\u5BC6\u78BC",
+    autoFocus: true,
+    style: {
+      width: "100%",
+      boxSizing: "border-box",
+      padding: "16px 20px",
+      borderRadius: "12px",
+      border: `2px solid ${pinError ? "#ff6b6b" : "#00B4DC40"}`,
+      background: "rgba(0,180,220,0.06)",
+      color: "#fff",
+      fontSize: "18px",
+      textAlign: "center",
+      letterSpacing: "3px",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      outline: "none"
+    }
+  }), pinError && /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: "#ff6b6b",
+      fontSize: "13px",
+      margin: "10px 0 0"
+    }
+  }, "\u5BC6\u78BC\u932F\u8AA4\uFF0C\u8ACB\u91CD\u8A66"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (pin.length > 0) onSubmit(pin);
+    },
+    style: {
+      width: "100%",
+      marginTop: "16px",
+      padding: "14px",
+      border: "none",
+      borderRadius: "12px",
+      background: pin.length > 0 ? "linear-gradient(135deg, #00B4DC, #0088A8)" : "#1A2A30",
+      color: pin.length > 0 ? "#fff" : "#555",
+      fontSize: "15px",
+      fontWeight: 700,
+      cursor: pin.length > 0 ? "pointer" : "default",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      transition: "all 0.2s"
+    }
+  }, "\u78BA\u8A8D")), /*#__PURE__*/React.createElement("button", {
+    onClick: onBack,
+    style: {
+      marginTop: "28px",
+      padding: "12px 32px",
+      border: "1px solid #1A3040",
+      borderRadius: "10px",
+      background: "transparent",
+      color: "#88B0C0",
+      fontSize: "14px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u2190 \u8FD4\u56DE\u5BA2\u6236\u7AEF"));
+}
+
+// --- Canvas helper ---
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// --- Customer View ---
+function CustomerView({
+  stock,
+  saveStock,
+  setStock,
+  orders,
+  saveOrders,
+  setOrders,
+  loadData
+}) {
+  const [cart, setCart] = useState({});
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [note, setNote] = useState("");
+  const [referrer, setReferrer] = useState("");
+  const [phoneError, setPhoneError] = useState("");
+  const [pickupDate, setPickupDate] = useState("");
+  const [success, setSuccess] = useState(null);
+  const canvasRef = useRef(null);
+  const [imgSrc, setImgSrc] = useState(null);
+
+  // Auto-sync stock every 10 seconds + when page becomes visible again
+  useEffect(function() {
+    var interval = setInterval(function() { loadData(); }, 5000);
+    var onVisible = function() { if (!document.hidden) loadData(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return function() { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [loadData]);
+  const cartTotal = Object.values(cart).reduce((a, b) => a + b, 0);
+  const isValid8 = cartTotal > 0 && cartTotal % 8 === 0;
+  const cartPacks = cartTotal / 8;
+  const cartAmount = cartPacks * PRICE_8_PACK;
+  const addToCart = flavorId => {
+    if ((stock[flavorId] || 0) - (cart[flavorId] || 0) <= 0) return;
+    setCart(c => ({
+      ...c,
+      [flavorId]: (c[flavorId] || 0) + 1
+    }));
+  };
+  const removeFromCart = flavorId => {
+    setCart(c => {
+      const next = {
+        ...c
+      };
+      if (next[flavorId] > 1) next[flavorId]--;else delete next[flavorId];
+      return next;
+    });
+  };
+  const isPhoneValid = /^09\d{8}$/.test(phone.trim());
+  const handleSubmit = () => {
+    if (!name.trim()) return;
+    if (!isPhoneValid) {
+      setPhoneError("請輸入正確的10碼手機號碼（09開頭）");
+      return;
+    }
+    if (!isValid8) return;
+    if (!pickupDate) return;
+    setPhoneError("");
+    var orderItems = {};
+    Object.keys(cart).forEach(function(k) { orderItems[k] = cart[k]; });
+    const order = {
+      id: generateId(),
+      orderNo: "---",
+      name: name.trim(),
+      phone: phone.trim(),
+      referrer: referrer.trim(),
+      note: note.trim(),
+      pickupDate: pickupDate,
+      items: orderItems,
+      total: cartTotal,
+      amount: cartAmount,
+      time: new Date().toLocaleString("zh-TW"),
+      status: "pending"
+    };
+
+    // Deduct stock locally
+    var newStock = {};
+    Object.keys(stock).forEach(function(k) { newStock[k] = stock[k]; });
+    Object.keys(orderItems).forEach(function(fid) {
+      newStock[fid] = Math.max(0, (newStock[fid] || 0) - orderItems[fid]);
+    });
+
+    // Assign local orderNo
+    order.orderNo = String(orders.length + 1).padStart(3, "0");
+
+    // Update UI immediately (local only, no GAS call here)
+    setStock(newStock);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e2) {}
+    setOrders(orders.concat([order]));
+    try {
+      var localOrders = JSON.parse(localStorage.getItem(ORDERS_KEY) || "[]");
+      localOrders.push(order);
+      localStorage.setItem(ORDERS_KEY, JSON.stringify(localOrders));
+    } catch(e2) {}
+    setSuccess(order);
+    setCart({});
+    setName("");
+    setPhone("");
+    setNote("");
+    setReferrer("");
+    setPickupDate("");
+
+    // Send to GAS once (GAS handles stock deduction + order save atomically)
+    gasCall({
+      action: "saveOrder",
+      order: order,
+      stockDeductions: orderItems
+    }).then(function(res) {
+      if (res && res.ok) console.log("GAS saved, orderNo:", res.orderNo);
+      loadData();
+    }).catch(function(e2) { console.warn("GAS send failed:", e2); });
+  };
+
+  // --- Generate order image on canvas ---
+  const generateImage = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !success) return;
+    const dpr = 2;
+    const W = 390 * dpr;
+    const items = Object.entries(success.items);
+    const hasNote = success.note && success.note.length > 0;
+    const hasReferrer = success.referrer && success.referrer.length > 0;
+    const hasPickupDate = success.pickupDate && success.pickupDate.length > 0;
+    const H = (580 + items.length * 36 + (hasPickupDate ? 20 : 0) + (hasNote ? 60 : 0) + (hasReferrer ? 30 : 0)) * dpr;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const w = W / dpr,
+      h = H / dpr;
+
+    // Background
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, "#1A0A10");
+    bg.addColorStop(0.3, "#0D0D0D");
+    bg.addColorStop(1, "#0D0D0D");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // Top accent bar
+    const accent = ctx.createLinearGradient(0, 0, w, 0);
+    accent.addColorStop(0, "#8B0023");
+    accent.addColorStop(0.5, "#C41E3A");
+    accent.addColorStop(1, "#8B0023");
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, 0, w, 6);
+
+    // Gold decorative line
+    ctx.strokeStyle = "#FFD70040";
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(30, 50);
+    ctx.lineTo(w - 30, 50);
+    ctx.stroke();
+
+    // Brand
+    ctx.fillStyle = "#FFD70099";
+    ctx.font = "500 10px 'Noto Sans TC', sans-serif";
+    ctx.textAlign = "center";
+    ctx.letterSpacing = "4px";
+    ctx.fillText("H Ä A G E N - D A Z S", w / 2, 36);
+
+    // Title
+    ctx.fillStyle = "#FFD700";
+    ctx.font = "bold 22px 'Noto Sans TC', sans-serif";
+    ctx.fillText("哈根達斯雪糕買四送四 預購憑證", w / 2, 76);
+
+    // Decorative line
+    ctx.strokeStyle = "#FFD70040";
+    ctx.beginPath();
+    ctx.moveTo(30, 90);
+    ctx.lineTo(w - 30, 90);
+    ctx.stroke();
+
+    // Status badge
+    ctx.fillStyle = "#28a74530";
+    roundRect(ctx, w / 2 - 60, 102, 120, 28, 14);
+    ctx.fill();
+    ctx.fillStyle = "#28a745";
+    ctx.font = "bold 13px 'Noto Sans TC', sans-serif";
+    ctx.fillText("✓ 預購成功", w / 2, 121);
+    let y = 156;
+
+    // Order info area (no card frame)
+    ctx.textAlign = "left";
+
+    // Helper: format time (without seconds)
+    var fmtTime = function(t) { try { var d = new Date(t); if (isNaN(d.getTime())) return t; return d.getFullYear() + "/" + (d.getMonth()+1) + "/" + d.getDate() + " " + (d.getHours() >= 12 ? "下午" : "上午") + (d.getHours() % 12 || 12) + ":" + String(d.getMinutes()).padStart(2,"0"); } catch(e) { return t; } };
+
+    // Name - 14px bold
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 14px 'Noto Sans TC', sans-serif";
+    ctx.fillText(success.name, 36, y);
+
+    // Phone
+    y += 20;
+    ctx.fillStyle = "#ccc";
+    ctx.font = "400 13px 'Noto Sans TC', sans-serif";
+    ctx.fillText(String(success.phone || ""), 36, y);
+
+    // Order No + Time
+    y += 20;
+    ctx.fillStyle = "#888";
+    ctx.font = "400 11px monospace";
+    ctx.fillText("#" + success.orderNo + "  " + fmtTime(success.time), 36, y);
+
+    // Pickup date
+    if (success.pickupDate) {
+      y += 20;
+      ctx.fillStyle = "#00D4AA";
+      ctx.font = "bold 13px 'Noto Sans TC', sans-serif";
+      ctx.fillText("📅 取貨日期：" + success.pickupDate, 36, y);
+    }
+
+    // Divider before items
+    y += 24;
+    ctx.strokeStyle = "#33333380";
+    ctx.beginPath();
+    ctx.moveTo(36, y);
+    ctx.lineTo(w - 36, y);
+    ctx.stroke();
+    y += 20;
+
+    // Items
+    items.forEach(([fid, qty]) => {
+      const fl = FLAVORS.find(f => f.id === fid);
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#eee";
+      ctx.font = "400 14px 'Noto Sans TC', sans-serif";
+      ctx.fillText(fl?.emoji + "  " + fl?.name, 36, y);
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#aaa";
+      ctx.fillText("× " + qty, w - 36, y);
+      y += 36;
+    });
+
+    // Referrer
+    if (hasReferrer) {
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#888";
+      ctx.font = "400 11px 'Noto Sans TC', sans-serif";
+      ctx.fillText("推薦人", 36, y);
+      ctx.fillStyle = "#ccc";
+      ctx.font = "400 13px 'Noto Sans TC', sans-serif";
+      ctx.fillText(success.referrer, 100, y);
+      y += 28;
+    }
+
+    // Note
+    if (hasNote) {
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#888";
+      ctx.font = "400 11px 'Noto Sans TC', sans-serif";
+      ctx.fillText("備註", 36, y + 6);
+      ctx.fillStyle = "#ccc";
+      ctx.font = "400 13px 'Noto Sans TC', sans-serif";
+      ctx.fillText(success.note.slice(0, 40), 36, y + 24);
+      y += 46;
+    }
+
+    // Divider before total
+    ctx.strokeStyle = "#33333380";
+    ctx.beginPath();
+    ctx.moveTo(36, y);
+    ctx.lineTo(w - 36, y);
+    ctx.stroke();
+
+    // Total bar
+    y += 10;
+    ctx.fillStyle = "#C41E3A18";
+    roundRect(ctx, 20, y, w - 40, 48, 12);
+    ctx.fill();
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#FFD700";
+    ctx.font = "bold 16px 'Noto Sans TC', sans-serif";
+    ctx.fillText("合計", 36, y + 30);
+    ctx.textAlign = "right";
+    ctx.font = "bold 20px 'Noto Sans TC', sans-serif";
+    ctx.fillText(success.total + " 支 ・ $" + success.amount, w - 36, y + 31);
+
+    // Watermark - large centered diagonal
+    ctx.save();
+    ctx.translate(w / 2, 400);
+    ctx.rotate(-25 * Math.PI / 180);
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    ctx.font = "bold 48px 'Noto Sans TC', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("易仕門市", 0, 0);
+    ctx.restore();
+
+    // Footer notice
+    y += 70;
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#FFD70080";
+    ctx.font = "500 12px 'Noto Sans TC', sans-serif";
+    ctx.fillText("📱 到貨後門市夥伴將通知您前來取貨", w / 2, y);
+    ctx.fillStyle = "#666";
+    ctx.font = "400 11px 'Noto Sans TC', sans-serif";
+    ctx.fillText("請出示此憑證畫面即可取貨", w / 2, y + 22);
+
+    // Bottom accent
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, h - 4, w, 4);
+
+    // Convert to image data URL
+    try {
+      setImgSrc(canvas.toDataURL("image/png"));
+    } catch (e) {
+      console.error("toDataURL error", e);
+    }
+  }, [success]);
+  useEffect(() => {
+    if (success) {
+      setImgSrc(null);
+      setTimeout(generateImage, 150);
+    }
+  }, [success, generateImage]);
+  if (success) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "24px 16px",
+        textAlign: "center"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: "72px",
+        height: "72px",
+        borderRadius: "50%",
+        background: "linear-gradient(135deg, #28a745, #20c997)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        margin: "0 auto 16px",
+        fontSize: "36px",
+        animation: "popIn 0.4s ease"
+      }
+    }, "\u2713"), /*#__PURE__*/React.createElement("style", null, `@keyframes popIn { 0% { transform: scale(0); } 60% { transform: scale(1.2); } 100% { transform: scale(1); } }`), /*#__PURE__*/React.createElement("h2", {
+      style: {
+        color: "#FFD700",
+        fontSize: "20px",
+        fontWeight: 700,
+        margin: "0 0 4px"
+      }
+    }, "\u9810\u8CFC\u6210\u529F\uFF01"), /*#__PURE__*/React.createElement("p", {
+      style: {
+        color: "#aaa",
+        fontSize: "12px",
+        margin: "0 0 20px"
+      }
+    }, "\uD83D\uDC46 \u9577\u6309\u4E0B\u65B9\u5716\u7247\u5373\u53EF\u5132\u5B58\u5230\u76F8\u7C3F"), /*#__PURE__*/React.createElement("canvas", {
+      ref: canvasRef,
+      style: {
+        display: "none"
+      }
+    }), imgSrc ? /*#__PURE__*/React.createElement("img", {
+      src: imgSrc,
+      alt: "\u9810\u8CFC\u6191\u8B49",
+      style: {
+        width: "100%",
+        maxWidth: "390px",
+        borderRadius: "12px",
+        border: "1px solid #333"
+      }
+    }) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: "100%",
+        maxWidth: "390px",
+        height: "400px",
+        margin: "0 auto",
+        background: "#1A1A1A",
+        borderRadius: "12px",
+        border: "1px solid #333",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#888",
+        fontSize: "14px"
+      }
+    }, "\u5716\u7247\u751F\u6210\u4E2D..."), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: "12px",
+        padding: "10px",
+        borderRadius: "8px",
+        background: "#FFD70010",
+        border: "1px solid #FFD70030"
+      }
+    }, /*#__PURE__*/React.createElement("p", {
+      style: {
+        color: "#FFD700",
+        fontSize: "12px",
+        margin: 0,
+        fontWeight: 500
+      }
+    }, "\uD83D\uDCF1 \u624B\u6A5F\uFF1A\u9577\u6309\u5716\u7247 \u2192 \u5132\u5B58\u5716\u7247 / \u52A0\u5165\u7167\u7247"), /*#__PURE__*/React.createElement("p", {
+      style: {
+        color: "#888",
+        fontSize: "11px",
+        margin: "4px 0 0"
+      }
+    }, "\u53D6\u8CA8\u6642\u51FA\u793A\u6B64\u5716\u7247\u5373\u53EF")), /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        setSuccess(null);
+        setImgSrc(null);
+      },
+      style: {
+        marginTop: "16px",
+        padding: "14px 40px",
+        border: "none",
+        borderRadius: "10px",
+        background: "#1A1A1A",
+        border: "1px solid #333",
+        color: "#aaa",
+        fontSize: "15px",
+        fontWeight: 500,
+        cursor: "pointer",
+        fontFamily: "'Noto Sans TC', sans-serif"
+      }
+    }, "\u7E7C\u7E8C\u9810\u8CFC"));
+  }
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px"
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      color: "#FFD700",
+      fontSize: "14px",
+      fontWeight: 700,
+      margin: "0 0 12px",
+      letterSpacing: "1px"
+    }
+  }, "\u9078\u64C7\u53E3\u5473"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(2, 1fr)",
+      gap: "10px",
+      marginBottom: "20px"
+    }
+  }, FLAVORS.map(f => {
+    const remaining = (stock[f.id] || 0) - (cart[f.id] || 0);
+    const soldOut = stock[f.id] <= 0;
+    const inCart = cart[f.id] || 0;
+    return /*#__PURE__*/React.createElement("div", {
+      key: f.id,
+      style: {
+        background: soldOut ? "#1A1A1A" : "#1A1A1A",
+        borderRadius: "12px",
+        padding: "12px",
+        border: `1px solid ${inCart > 0 ? "#00D4AA" : "#333"}`,
+        opacity: soldOut ? 0.4 : 1,
+        transition: "all 0.2s",
+        position: "relative"
+      }
+    }, soldOut && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%) rotate(-20deg)",
+        color: "#ff4444",
+        fontSize: "16px",
+        fontWeight: 900,
+        letterSpacing: "2px",
+        opacity: 0.8
+      }
+    }, "\u552E\u5B8C"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        marginBottom: "4px"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: "20px"
+      }
+    }, f.emoji), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#fff",
+        fontSize: "13px",
+        fontWeight: 500,
+        lineHeight: "1.2"
+      }
+    }, f.name)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: "10px",
+        color: "#666",
+        marginBottom: "6px"
+      }
+    }, f.sku, " \u30FB \u5EAB\u5B58 ", stock[f.id], " \u652F"), !soldOut && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: "6px"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => removeFromCart(f.id),
+      disabled: !inCart,
+      style: {
+        width: "32px",
+        height: "32px",
+        borderRadius: "8px",
+        border: "none",
+        background: inCart ? "#333" : "#222",
+        color: inCart ? "#fff" : "#555",
+        fontSize: "18px",
+        cursor: inCart ? "pointer" : "default",
+        fontFamily: "'Noto Sans TC', sans-serif"
+      }
+    }, "\u2212"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#00D4AA",
+        fontSize: "18px",
+        fontWeight: 700,
+        minWidth: "28px",
+        textAlign: "center"
+      }
+    }, inCart), /*#__PURE__*/React.createElement("button", {
+      onClick: () => addToCart(f.id),
+      disabled: remaining <= 0,
+      style: {
+        width: "32px",
+        height: "32px",
+        borderRadius: "8px",
+        border: "none",
+        background: remaining > 0 ? "#C41E3A" : "#222",
+        color: remaining > 0 ? "#fff" : "#555",
+        fontSize: "18px",
+        cursor: remaining > 0 ? "pointer" : "default",
+        fontFamily: "'Noto Sans TC', sans-serif"
+      }
+    }, "+")));
+  })), cartTotal > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "12px",
+      padding: "14px",
+      border: `1px solid ${isValid8 ? "#FFD700" : "#ff9f43"}`,
+      marginBottom: "16px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: "4px"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#FFD700",
+      fontSize: "14px",
+      fontWeight: 700
+    }
+  }, "\uD83D\uDED2 \u5DF2\u9078 ", cartTotal, " \u652F"), isValid8 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#FFD93D",
+      fontSize: "18px",
+      fontWeight: 900
+    }
+  }, "$", cartAmount)), isValid8 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#888",
+      fontSize: "11px"
+    }
+  }, "\u5171 ", cartPacks, " \u7D44\uFF08\u6BCF\u7D44 8 \u652F $", PRICE_8_PACK, "\uFF09") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#ff9f43",
+      fontSize: "12px",
+      fontWeight: 500,
+      display: "flex",
+      alignItems: "center",
+      gap: "4px"
+    }
+  }, "\u26A0\uFE0F \u9700\u6E4A\u6EFF 8 \u7684\u500D\u6578\u624D\u80FD\u9810\u8CFC\uFF08\u9084\u5DEE ", 8 - cartTotal % 8, " \u652F\uFF09")), /*#__PURE__*/React.createElement("h3", {
+    style: {
+      color: "#FFD700",
+      fontSize: "14px",
+      fontWeight: 700,
+      margin: "0 0 10px",
+      letterSpacing: "1px"
+    }
+  }, "\u586B\u5BEB\u8CC7\u6599"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "10px",
+      marginBottom: "20px",
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: "50%",
+      left: "50%",
+      transform: "translate(-50%, -50%) rotate(-25deg)",
+      fontSize: "48px",
+      fontWeight: 900,
+      color: "rgba(255,255,255,0.04)",
+      whiteSpace: "nowrap",
+      pointerEvents: "none",
+      zIndex: 0,
+      letterSpacing: "8px"
+    }
+  }, "易仕門市"), /*#__PURE__*/React.createElement("input", {
+    value: name,
+    onChange: e => setName(e.target.value),
+    placeholder: "\u59D3\u540D",
+    style: {
+      padding: "14px 16px",
+      borderRadius: "10px",
+      border: "1px solid #333",
+      background: "#1A1A1A",
+      color: "#fff",
+      fontSize: "15px",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    value: phone,
+    onChange: e => {
+      const val = e.target.value.replace(/\D/g, "").slice(0, 10);
+      setPhone(val);
+      setPhoneError("");
+    },
+    placeholder: "\u624B\u6A5F\u865F\u78BC\uFF0809 \u958B\u982D 10 \u78BC\uFF09",
+    type: "tel",
+    inputMode: "numeric",
+    style: {
+      padding: "14px 16px",
+      borderRadius: "10px",
+      border: `1px solid ${phoneError ? "#ff4444" : "#333"}`,
+      background: "#1A1A1A",
+      color: "#fff",
+      fontSize: "15px",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      outline: "none",
+      letterSpacing: "1px"
+    }
+  }), phoneError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#ff4444",
+      fontSize: "12px",
+      marginTop: "-4px"
+    }
+  }, phoneError), /*#__PURE__*/React.createElement("div", {
+    style: { marginBottom: "2px" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { color: "#88B0C0", fontSize: "13px", marginBottom: "8px", fontWeight: 500 }
+  }, "\u53D6\u8CA8\u65E5\u671F"), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: "6px", flexWrap: "wrap" }
+  }, ["4/10", "4/11", "4/12", "4/13", "4/14"].map(function(d) {
+    return /*#__PURE__*/React.createElement("button", {
+      key: d,
+      onClick: function() { setPickupDate(d); },
+      style: {
+        flex: 1,
+        minWidth: "52px",
+        padding: "10px 4px",
+        border: pickupDate === d ? "2px solid #00D4AA" : "1px solid #333",
+        borderRadius: "8px",
+        background: pickupDate === d ? "#00D4AA20" : "#1A1A1A",
+        color: pickupDate === d ? "#00D4AA" : "#888",
+        fontSize: "14px",
+        fontWeight: pickupDate === d ? 700 : 400,
+        cursor: "pointer",
+        fontFamily: "'Noto Sans TC', sans-serif",
+        transition: "all 0.15s"
+      }
+    }, d);
+  }))), /*#__PURE__*/React.createElement("input", {
+    value: referrer,
+    onChange: e => setReferrer(e.target.value),
+    placeholder: "\u63A8\u85A6\u4EBA\u59D3\u540D\uFF08\u9078\u586B\uFF09",
+    style: {
+      padding: "14px 16px",
+      borderRadius: "10px",
+      border: "1px solid #333",
+      background: "#1A1A1A",
+      color: "#fff",
+      fontSize: "15px",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement("textarea", {
+    value: note,
+    onChange: e => setNote(e.target.value),
+    placeholder: "\u5099\u8A3B\uFF08\u9078\u586B\uFF0C\u4F8B\u5982\uFF1A\u53D6\u8CA8\u6642\u9593\u504F\u597D\uFF09",
+    rows: 2,
+    style: {
+      padding: "14px 16px",
+      borderRadius: "10px",
+      border: "1px solid #333",
+      background: "#1A1A1A",
+      color: "#fff",
+      fontSize: "14px",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      outline: "none",
+      resize: "none"
+    }
+  })), (() => {
+    const canSubmit = isValid8 && name.trim() && isPhoneValid && pickupDate;
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("button", {
+      onClick: handleSubmit,
+      style: {
+        width: "100%",
+        padding: "16px",
+        border: "none",
+        borderRadius: "12px",
+        background: canSubmit ? "linear-gradient(135deg, #00B4DC, #0088A8)" : "#222",
+        color: canSubmit ? "#fff" : "#555",
+        fontSize: "16px",
+        fontWeight: 700,
+        cursor: canSubmit ? "pointer" : "default",
+        fontFamily: "'Noto Sans TC', sans-serif",
+        transition: "all 0.2s",
+        opacity: canSubmit ? 1 : 0.6
+      }
+    }, cartTotal === 0 ? "確認預購" : !isValid8 ? `還差 ${8 - cartTotal % 8} 支湊滿 ${Math.ceil(cartTotal / 8) * 8} 支` : `確認預購（${cartPacks}組 $${cartAmount}）`));
+  })());
+}
+
+// --- Admin View ---
+function AdminView({
+  stock,
+  saveStock,
+  orders,
+  saveOrders,
+  onLogout,
+  loadData
+}) {
+  const [tab, setTab] = useState("orders");
+
+  // Auto-refresh every 15 seconds to sync with other devices
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadData();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+  const [editStock, setEditStock] = useState(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editingNoteText, setEditingNoteText] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [batchConfirmDelete, setBatchConfirmDelete] = useState(false);
+  const [batchImgSrc, setBatchImgSrc] = useState(null);
+  const batchCanvasRef = useRef(null);
+  const filteredOrders = orders.filter(o => o.name.includes(searchTerm) || o.phone.includes(searchTerm) || (o.orderNo || "").includes(searchTerm) || o.id.includes(searchTerm)).reverse();
+  const totalRevenue = orders.reduce((sum, o) => sum + o.amount, 0);
+  const totalUnits = orders.reduce((sum, o) => sum + o.total, 0);
+  const toggleStatus = orderId => {
+    const newOrders = orders.map(o => o.id === orderId ? {
+      ...o,
+      status: o.status === "pending" ? "picked" : "pending"
+    } : o);
+    saveOrders(newOrders);
+  };
+  const deleteOrder = orderId => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    const newStock = {
+      ...stock
+    };
+    for (const [fid, qty] of Object.entries(order.items)) {
+      newStock[fid] = (newStock[fid] || 0) + qty;
+    }
+    const newOrders = orders.filter(o => o.id !== orderId);
+    setConfirmDeleteId(null);
+    saveStock(newStock);
+    saveOrders(newOrders);
+  };
+  const saveAdminNote = (orderId, noteText) => {
+    const newOrders = orders.map(o => o.id === orderId ? {
+      ...o,
+      adminNote: noteText.trim()
+    } : o);
+    saveOrders(newOrders);
+    setEditingNoteId(null);
+    setEditingNoteText("");
+  };
+  const handleStockSave = () => {
+    if (!editStock) return;
+    saveStock(editStock);
+    setEditStock(null);
+  };
+  const resetAll = () => {
+    saveStock(getInitialStock());
+    saveOrders([]);
+    setConfirmReset(false);
+  };
+
+  // Export states
+  const [exportCopied, setExportCopied] = useState(false);
+  const [showExportPanel, setShowExportPanel] = useState(false);
+
+  // Generate TSV for clipboard (tab-separated, pastes perfectly into spreadsheets)
+  const generateTSV = () => {
+    const header = "訂單編號\t姓名\t電話\t取貨日期\t推薦人\t口味明細\t數量\t金額\t時間\t狀態\t客人備註\t門市備註";
+    const rows = orders.map(o => {
+      const items = Object.entries(o.items).map(([fid, qty]) => {
+        const fl = FLAVORS.find(f => f.id === fid);
+        return `${fl?.name}×${qty}`;
+      }).join("；");
+      return `${o.orderNo || o.id}\t${o.name}\t${o.phone}\t${o.pickupDate || ""}\t${o.referrer || ""}\t${items}\t${o.total}\t${o.amount}\t${o.time}\t${o.status === "picked" ? "已取" : "未取"}\t${o.note || ""}\t${o.adminNote || ""}`;
+    }).join("\n");
+    return header + "\n" + rows;
+  };
+  const copyToClipboard = () => {
+    const tsv = generateTSV();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(tsv).then(() => {
+          setExportCopied(true);
+          setTimeout(() => setExportCopied(false), 2500);
+        }).catch(() => fallbackCopy(tsv));
+      } else {
+        fallbackCopy(tsv);
+      }
+    } catch (e) {
+      fallbackCopy(tsv);
+    }
+  };
+  const fallbackCopy = text => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;opacity:0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand("copy");
+      setExportCopied(true);
+      setTimeout(() => setExportCopied(false), 2500);
+    } catch (e) {
+      setShowExportPanel(true);
+    }
+    document.body.removeChild(ta);
+  };
+  const openGoogleSheets = () => {
+    // Generate CSV content for Google Sheets URL import
+    const header = "訂單編號,姓名,電話,取貨日期,推薦人,口味明細,數量,金額,時間,狀態,客人備註,門市備註";
+    const rows = orders.map(o => {
+      const items = Object.entries(o.items).map(([fid, qty]) => {
+        const fl = FLAVORS.find(f => f.id === fid);
+        return `${fl?.name}×${qty}`;
+      }).join("；");
+      return [o.orderNo || o.id, o.name, o.phone, o.pickupDate || "", o.referrer || "", items, o.total, o.amount, o.time, o.status === "picked" ? "已取" : "未取", o.note || "", o.adminNote || ""].join(",");
+    }).join("%0A");
+    const csvContent = encodeURIComponent(header) + "%0A" + rows;
+    window.open(`https://docs.google.com/spreadsheets/create`, "_blank");
+  };
+  const toggleSelect = id => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);else next.add(id);
+      return next;
+    });
+  };
+  const selectAll = () => {
+    if (selectedIds.size === filteredOrders.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredOrders.map(o => o.id)));
+    }
+  };
+  const selectedOrders = orders.filter(o => selectedIds.has(o.id));
+  const batchDelete = () => {
+    const ids = new Set(selectedIds);
+    const newStock = {
+      ...stock
+    };
+    orders.forEach(o => {
+      if (ids.has(o.id)) {
+        Object.entries(o.items).forEach(([fid, qty]) => {
+          newStock[fid] = (newStock[fid] || 0) + qty;
+        });
+      }
+    });
+    const newOrders = orders.filter(o => !ids.has(o.id));
+    setSelectedIds(new Set());
+    setBatchConfirmDelete(false);
+    saveStock(newStock);
+    saveOrders(newOrders);
+  };
+
+  // Generate batch print image - matches customer receipt style
+  const generateBatchImage = () => {
+    const canvas = batchCanvasRef.current;
+    if (!canvas || selectedOrders.length === 0) return;
+    const dpr = 2;
+    const W = 390 * dpr;
+    const w = 390;
+
+    // Pre-calculate height per order
+    const orderHeights = selectedOrders.map(o => {
+      const itemCount = Object.keys(o.items).length;
+      let h = 90 + itemCount * 24 + 40; // header + items + total
+      if (o.note) h += 20;
+      if (o.adminNote) h += 20;
+      return h;
+    });
+    const HEADER_H = 60;
+    const GAP = 16;
+    const FOOTER_H = 40;
+    const totalH = HEADER_H + orderHeights.reduce((a, b) => a + b, 0) + (selectedOrders.length - 1) * GAP + FOOTER_H;
+    canvas.width = W;
+    canvas.height = totalH * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+
+    // BG
+    ctx.fillStyle = "#0D0D0D";
+    ctx.fillRect(0, 0, w, totalH);
+
+    // Top accent
+    const accent = ctx.createLinearGradient(0, 0, w, 0);
+    accent.addColorStop(0, "#8B0023");
+    accent.addColorStop(0.5, "#C41E3A");
+    accent.addColorStop(1, "#8B0023");
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, 0, w, 4);
+
+    // Header
+    ctx.fillStyle = "#FFD70099";
+    ctx.font = "500 10px 'Noto Sans TC', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("H Ä A G E N - D A Z S  哈根達斯雪糕買四送四", w / 2, 26);
+    ctx.fillStyle = "#888";
+    ctx.font = "400 11px 'Noto Sans TC', sans-serif";
+    ctx.fillText(`共 ${selectedOrders.length} 筆訂單 ・ ${new Date().toLocaleDateString("zh-TW")}`, w / 2, 46);
+
+    // Watermark - large centered diagonal
+    ctx.save();
+    ctx.translate(w / 2, totalH / 2);
+    ctx.rotate(-25 * Math.PI / 180);
+    ctx.fillStyle = "rgba(255,255,255,0.03)";
+    ctx.font = "bold 60px 'Noto Sans TC', sans-serif";
+    ctx.fillText("易仕門市", 0, 0);
+    ctx.restore();
+
+    let y = HEADER_H;
+    selectedOrders.forEach((o, idx) => {
+      const itemEntries = Object.entries(o.items);
+      const cardH = orderHeights[idx];
+
+      // Card bg
+      ctx.fillStyle = "#1A1A1A";
+      roundRect(ctx, 12, y, w - 24, cardH, 10);
+      ctx.fill();
+      ctx.strokeStyle = o.status === "picked" ? "#28a745" : "#333";
+      ctx.lineWidth = 1;
+      roundRect(ctx, 12, y, w - 24, cardH, 10);
+      ctx.stroke();
+      const cx = 28;
+      let cy = y + 20;
+
+      // Order number badge
+      ctx.fillStyle = "#C41E3A";
+      roundRect(ctx, cx - 2, cy - 11, 20, 16, 4);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 10px 'Noto Sans TC', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(String(idx + 1), cx + 8, cy);
+
+      // Name
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#FFD700";
+      ctx.font = "bold 16px 'Noto Sans TC', sans-serif";
+      ctx.fillText(o.name, cx + 26, cy);
+      // Phone (separate line)
+      cy += 20;
+      ctx.fillStyle = "#ccc";
+      ctx.font = "400 14px 'Noto Sans TC', sans-serif";
+      ctx.fillText(String(o.phone || ""), cx + 26, cy);
+
+      // Status
+      ctx.textAlign = "right";
+      ctx.fillStyle = o.status === "picked" ? "#28a745" : "#FFD700";
+      ctx.font = "500 11px 'Noto Sans TC', sans-serif";
+      ctx.fillText(o.status === "picked" ? "✓ 已取" : "⏳ 未取", w - 28, cy);
+      cy += 16;
+      // Order ID + time
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#666";
+      ctx.font = "400 10px monospace";
+      ctx.fillText("#" + (o.orderNo || o.id) + "  " + o.time, cx, cy);
+
+      // Divider
+      cy += 10;
+      ctx.strokeStyle = "#33333380";
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(w - 28, cy);
+      ctx.stroke();
+      cy += 14;
+
+      // Items - each on its own line with left name / right quantity
+      itemEntries.forEach(([fid, qty]) => {
+        const fl = FLAVORS.find(f => f.id === fid);
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#eee";
+        ctx.font = "400 13px 'Noto Sans TC', sans-serif";
+        ctx.fillText((fl?.emoji || "") + "  " + (fl?.name || fid), cx, cy);
+        ctx.textAlign = "right";
+        ctx.fillStyle = "#FFD700";
+        ctx.font = "bold 13px 'Noto Sans TC', sans-serif";
+        ctx.fillText("× " + qty, w - 28, cy);
+        cy += 24;
+      });
+
+      // Notes
+      if (o.note) {
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#aaa";
+        ctx.font = "400 10px 'Noto Sans TC', sans-serif";
+        ctx.fillText("📝 " + o.note.slice(0, 40), cx, cy);
+        cy += 20;
+      }
+      if (o.adminNote) {
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#ff9f43";
+        ctx.font = "400 10px 'Noto Sans TC', sans-serif";
+        ctx.fillText("🏪 " + o.adminNote.slice(0, 40), cx, cy);
+        cy += 20;
+      }
+
+      // Total bar
+      ctx.fillStyle = "#C41E3A18";
+      roundRect(ctx, cx - 4, cy - 2, w - 48, 22, 6);
+      ctx.fill();
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#FFD700";
+      ctx.font = "bold 12px 'Noto Sans TC', sans-serif";
+      ctx.fillText("合計", cx, cy + 12);
+      ctx.textAlign = "right";
+      ctx.font = "bold 14px 'Noto Sans TC', sans-serif";
+      ctx.fillText(o.total + " 支 ・ $" + o.amount, w - 28, cy + 12);
+      y += cardH + GAP;
+    });
+
+    // Bottom accent
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, totalH - 4, w, 4);
+    try {
+      setBatchImgSrc(canvas.toDataURL("image/png"));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Generate A4 pages with 4 labels each (2x2 grid)
+  const [labelImages, setLabelImages] = useState([]);
+  const labelCanvasRef = useRef(null);
+  const drawSingleLabel = (ctx, o, x, y, LW, LH) => {
+    const pad = 12;
+    const cx = x + pad;
+    const rEdge = x + LW - pad;
+    let cy = y + 18;
+
+    // Card border (cut line)
+    ctx.strokeStyle = "#ccc";
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(x, y, LW, LH);
+    ctx.setLineDash([]);
+
+    // Top accent
+    ctx.fillStyle = "#8B0023";
+    ctx.fillRect(x + 1, y + 1, LW - 2, 4);
+
+    // Brand
+    ctx.fillStyle = "#999";
+    ctx.font = "500 8px 'Noto Sans TC', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("HÄAGEN-DAZS", x + LW / 2, cy);
+    cy += 14;
+    ctx.fillStyle = "#8B0023";
+    ctx.font = "bold 13px 'Noto Sans TC', sans-serif";
+    ctx.fillText("哈根達斯雪糕買四送四 取貨單", x + LW / 2, cy);
+    cy += 8;
+
+    // Watermark - large centered diagonal
+    ctx.save();
+    ctx.translate(x + LW / 2, y + LH / 2);
+    ctx.rotate(-25 * Math.PI / 180);
+    ctx.fillStyle = "rgba(0,0,0,0.04)";
+    ctx.font = "bold 28px 'Noto Sans TC', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("易仕門市", 0, 0);
+    ctx.restore();
+    ctx.textAlign = "center";
+    ctx.strokeStyle = "#8B0023";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(rEdge, cy);
+    ctx.stroke();
+    cy += 22;
+
+    // Name - 14px bold
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#000";
+    ctx.font = "bold 14px 'Noto Sans TC', sans-serif";
+    ctx.fillText(o.name, cx, cy);
+    // Phone
+    cy += 20;
+    ctx.fillStyle = "#555";
+    ctx.font = "400 12px 'Noto Sans TC', sans-serif";
+    ctx.fillText(String(o.phone || ""), cx, cy);
+
+    // Order No + Time (without seconds)
+    cy += 20;
+    var fmtT = (function(t) { try { var d = new Date(t); if (isNaN(d.getTime())) return t; return d.getFullYear() + "/" + (d.getMonth()+1) + "/" + d.getDate() + " " + (d.getHours() >= 12 ? "下午" : "上午") + (d.getHours() % 12 || 12) + ":" + String(d.getMinutes()).padStart(2,"0"); } catch(e) { return t; } })(o.time);
+    ctx.fillStyle = "#888";
+    ctx.font = "400 9px monospace";
+    ctx.fillText("#" + (o.orderNo || o.id) + "  " + fmtT, cx, cy);
+    ctx.textAlign = "right";
+    ctx.fillStyle = o.status === "picked" ? "#155724" : "#856404";
+    ctx.font = "600 9px 'Noto Sans TC', sans-serif";
+    ctx.fillText(o.status === "picked" ? "\u2713 \u5DF2\u53D6" : "\u23F3 \u672A\u53D6", rEdge, cy);
+
+    // Pickup date
+    if (o.pickupDate) {
+      cy += 20;
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#8B0023";
+      ctx.font = "bold 11px 'Noto Sans TC', sans-serif";
+      ctx.fillText("\uD83D\uDCC5 \u53D6\u8CA8\u65E5\u671F\uFF1A" + o.pickupDate, cx, cy);
+    }
+
+    cy += 16;
+    ctx.strokeStyle = "#ddd";
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(rEdge, cy);
+    ctx.stroke();
+    cy += 18;
+
+    // Items - larger font, more spacing
+    ctx.textAlign = "left";
+    Object.entries(o.items).forEach(([fid, qty]) => {
+      const fl = FLAVORS.find(f => f.id === fid);
+      ctx.fillStyle = "#333";
+      ctx.font = "400 13px 'Noto Sans TC', sans-serif";
+      ctx.fillText((fl?.emoji || "") + " " + (fl?.name || fid), cx, cy);
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#8B0023";
+      ctx.font = "bold 13px 'Noto Sans TC', sans-serif";
+      ctx.fillText("\u00D7 " + qty, rEdge, cy);
+      ctx.textAlign = "left";
+      cy += 26;
+    });
+
+    if (o.referrer) {
+      ctx.fillStyle = "#888";
+      ctx.font = "400 10px 'Noto Sans TC', sans-serif";
+      ctx.fillText("\uD83D\uDC64 \u63A8\u85A6\u4EBA\uFF1A" + o.referrer, cx, cy);
+      cy += 18;
+    }
+    if (o.note) {
+      ctx.fillStyle = "#666";
+      ctx.font = "400 10px 'Noto Sans TC', sans-serif";
+      ctx.fillText("\uD83D\uDCDD " + o.note.slice(0, 30), cx, cy);
+      cy += 18;
+    }
+    if (o.adminNote) {
+      ctx.fillStyle = "#cc6600";
+      ctx.font = "400 10px 'Noto Sans TC', sans-serif";
+      ctx.fillText("\uD83C\uDFEA " + o.adminNote.slice(0, 30), cx, cy);
+      cy += 18;
+    }
+
+    // Total bar pinned to bottom
+    const totalY = y + LH - 36;
+    ctx.fillStyle = "#f5f0eb";
+    roundRect(ctx, cx - 2, totalY, LW - pad * 2 + 4, 28, 4);
+    ctx.fill();
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#666";
+    ctx.font = "400 11px 'Noto Sans TC', sans-serif";
+    ctx.fillText("\u5408\u8A08", cx + 4, totalY + 19);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#8B0023";
+    ctx.font = "bold 16px 'Noto Sans TC', sans-serif";
+    ctx.fillText(o.total + " \u652F \u30FB $" + o.amount, rEdge - 2, totalY + 19);
+  };
+  const generatePrintLabels = () => {
+    if (selectedOrders.length === 0) return;
+    const canvas = labelCanvasRef.current;
+    if (!canvas) return;
+    const dpr = 2;
+    // A4 proportions: 210mm x 297mm ≈ 794 x 1123 px at 96dpi
+    const A4W = 794;
+    const A4H = 1123;
+    canvas.width = A4W * dpr;
+    canvas.height = A4H * dpr;
+    const ctx = canvas.getContext("2d");
+    const MARGIN = 18;
+    const GAP = 12;
+    const LW = (A4W - MARGIN * 2 - GAP) / 2;
+    const LH = (A4H - MARGIN * 2 - GAP) / 2;
+    const positions = [[MARGIN, MARGIN], [MARGIN + LW + GAP, MARGIN], [MARGIN, MARGIN + LH + GAP], [MARGIN + LW + GAP, MARGIN + LH + GAP]];
+    const imgs = [];
+    const totalPages = Math.ceil(selectedOrders.length / 4);
+    for (let page = 0; page < totalPages; page++) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, A4W, A4H);
+      for (let i = 0; i < 4; i++) {
+        const orderIdx = page * 4 + i;
+        const [px, py] = positions[i];
+        if (orderIdx >= selectedOrders.length) {
+          ctx.strokeStyle = "#e8e8e8";
+          ctx.lineWidth = 0.5;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(px, py, LW, LH);
+          ctx.setLineDash([]);
+        } else {
+          drawSingleLabel(ctx, selectedOrders[orderIdx], px, py, LW, LH);
+        }
+      }
+      try {
+        imgs.push(canvas.toDataURL("image/jpeg", 0.95));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setLabelImages(imgs);
+
+    // Build PDF using jspdf loaded from CDN
+    if (!window.jspdf) {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      script.onload = () => createPdf(imgs);
+      document.head.appendChild(script);
+    } else {
+      createPdf(imgs);
+    }
+  };
+  const [pdfUrl, setPdfUrl] = useState(null);
+  const createPdf = imgs => {
+    try {
+      const {
+        jsPDF
+      } = window.jspdf;
+      const doc = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4"
+      });
+      imgs.forEach((imgData, i) => {
+        if (i > 0) doc.addPage();
+        doc.addImage(imgData, "JPEG", 0, 0, 210, 297);
+      });
+      const blob = doc.output("blob");
+      const url = URL.createObjectURL(blob);
+      setPdfUrl(url);
+    } catch (e) {
+      console.error("PDF error", e);
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3, 1fr)",
+      gap: "8px",
+      marginBottom: "16px"
+    }
+  }, [{
+    label: "總訂單",
+    value: orders.length,
+    icon: "📋"
+  }, {
+    label: "總銷量",
+    value: `${totalUnits}支`,
+    icon: "🍦"
+  }, {
+    label: "總金額",
+    value: `$${totalRevenue}`,
+    icon: "💰"
+  }].map((s, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "10px",
+      padding: "12px",
+      textAlign: "center",
+      border: "1px solid #333"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "18px",
+      marginBottom: "2px"
+    }
+  }, s.icon), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#00D4AA",
+      fontSize: "16px",
+      fontWeight: 700
+    }
+  }, s.value), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#888",
+      fontSize: "11px"
+    }
+  }, s.label)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "6px",
+      marginBottom: "14px"
+    }
+  }, [{
+    key: "orders",
+    label: "訂單"
+  }, {
+    key: "stock",
+    label: "庫存"
+  }].map(t => /*#__PURE__*/React.createElement("button", {
+    key: t.key,
+    onClick: () => setTab(t.key),
+    style: {
+      flex: 1,
+      padding: "10px",
+      border: "none",
+      borderRadius: "8px",
+      background: tab === t.key ? "#00B4DC" : "#1A1A1A",
+      color: tab === t.key ? "#fff" : "#888",
+      fontSize: "13px",
+      fontWeight: tab === t.key ? 700 : 400,
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, t.label))), tab === "orders" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "8px",
+      marginBottom: "10px"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: searchTerm,
+    onChange: e => setSearchTerm(e.target.value),
+    placeholder: "\uD83D\uDD0D \u641C\u5C0B\u59D3\u540D\u3001\u96FB\u8A71\u3001\u8A02\u55AE\u7DE8\u865F",
+    style: {
+      flex: 1,
+      boxSizing: "border-box",
+      padding: "12px 14px",
+      borderRadius: "10px",
+      border: "1px solid #333",
+      background: "#1A1A1A",
+      color: "#fff",
+      fontSize: "13px",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      loadData();
+    },
+    style: {
+      padding: "12px 16px",
+      border: "none",
+      borderRadius: "10px",
+      background: "linear-gradient(135deg, #00D4AA, #00B4DC)",
+      color: "#fff",
+      fontSize: "13px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      whiteSpace: "nowrap",
+      fontWeight: 600,
+      boxShadow: "0 2px 8px rgba(0,180,220,0.3)"
+    }
+  }, "\u540C\u6B65")), filteredOrders.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: "10px",
+      padding: "8px 4px"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: selectAll,
+    style: {
+      padding: "6px 12px",
+      border: "1px solid #444",
+      borderRadius: "6px",
+      background: selectedIds.size === filteredOrders.length ? "#00D4AA20" : "transparent",
+      color: selectedIds.size === filteredOrders.length ? "#00D4AA" : "#888",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, selectedIds.size === filteredOrders.length ? "☑ 取消全選" : "☐ 全選"), selectedIds.size > 0 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#00D4AA",
+      fontSize: "12px",
+      fontWeight: 600
+    }
+  }, "\u5DF2\u9078 ", selectedIds.size, " \u7B46")), selectedIds.size > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "10px",
+      padding: "10px",
+      border: "1px solid #00D4AA",
+      marginBottom: "12px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "6px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "6px"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: generatePrintLabels,
+    style: {
+      flex: 1,
+      padding: "10px 8px",
+      border: "none",
+      borderRadius: "8px",
+      background: "linear-gradient(135deg, #00B4DC, #0088A8)",
+      color: "#fff",
+      fontSize: "12px",
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\uD83D\uDCC4 \u53D6\u8CA8\u6A19\u7C64"), /*#__PURE__*/React.createElement("button", {
+    onClick: copyToClipboard,
+    style: {
+      flex: 1,
+      padding: "10px 8px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#333",
+      color: exportCopied ? "#28a745" : "#fff",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, exportCopied ? "✓ 已複製" : "📋 複製資料")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "6px"
+    }
+  }, batchConfirmDelete ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: batchDelete,
+    style: {
+      flex: 1,
+      padding: "10px 8px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#ff4444",
+      color: "#fff",
+      fontSize: "12px",
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u78BA\u5B9A\u522A\u9664 ", selectedIds.size, " \u7B46"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setBatchConfirmDelete(false),
+    style: {
+      padding: "10px 12px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#333",
+      color: "#aaa",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u53D6\u6D88")) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => setBatchConfirmDelete(true),
+    style: {
+      flex: 1,
+      padding: "10px 8px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#ff444430",
+      color: "#ff4444",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\uD83D\uDDD1 \u522A\u9664\u5DF2\u9078"))), /*#__PURE__*/React.createElement("canvas", {
+    ref: batchCanvasRef,
+    style: {
+      display: "none"
+    }
+  }), /*#__PURE__*/React.createElement("canvas", {
+    ref: labelCanvasRef,
+    style: {
+      display: "none"
+    }
+  }), batchImgSrc && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "10px",
+      padding: "12px",
+      border: "1px solid #00D4AA",
+      marginBottom: "12px",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#00D4AA",
+      fontSize: "13px",
+      fontWeight: 600,
+      marginBottom: "6px"
+    }
+  }, "\uD83D\uDC46 \u9577\u6309\u5716\u7247\u5132\u5B58\uFF0C\u5217\u5370\u5F8C\u8CBC\u5728\u8CA8\u7BB1\u4E0A\u6838\u5C0D"), /*#__PURE__*/React.createElement("img", {
+    src: batchImgSrc,
+    alt: "取貨單",
+    style: {
+      width: "100%",
+      maxWidth: "390px",
+      borderRadius: "8px",
+      border: "1px solid #333"
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setBatchImgSrc(null),
+    style: {
+      marginTop: "8px",
+      padding: "6px 16px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#333",
+      color: "#aaa",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u6536\u8D77")), (labelImages.length > 0 || pdfUrl) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "10px",
+      padding: "12px",
+      border: "1px solid #00B4DC",
+      marginBottom: "12px",
+      textAlign: "center"
+    }
+  }, pdfUrl && /*#__PURE__*/React.createElement("a", {
+    href: pdfUrl,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      display: "block",
+      padding: "14px",
+      borderRadius: "8px",
+      background: "linear-gradient(135deg, #00B4DC, #0088A8)",
+      color: "#fff",
+      fontSize: "15px",
+      fontWeight: 700,
+      textDecoration: "none",
+      marginBottom: "12px",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\uD83D\uDCC4 \u958B\u555F PDF \u53D6\u8CA8\u6A19\u7C64"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#888",
+      fontSize: "11px",
+      marginBottom: "10px"
+    }
+  }, "\u9EDE\u64CA\u4E0A\u65B9\u958B\u555F PDF \u2192 \u5217\u5370 A4\uFF08\u6BCF\u9801 4 \u5F35\u6A19\u7C64\uFF0C\u6CBF\u865B\u7DDA\u88C1\u5207\uFF09"), labelImages.length > 0 && /*#__PURE__*/React.createElement("details", null, /*#__PURE__*/React.createElement("summary", {
+    style: {
+      color: "#666",
+      fontSize: "11px",
+      cursor: "pointer",
+      marginBottom: "8px"
+    }
+  }, "\u9810\u89BD\u5716\u7247\uFF08\u9577\u6309\u53EF\u5B58\u5716\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "10px",
+      alignItems: "center",
+      marginTop: "8px"
+    }
+  }, labelImages.map((src, i) => /*#__PURE__*/React.createElement("img", {
+    key: i,
+    src: src,
+    alt: `A4 第 ${i + 1} 頁`,
+    style: {
+      width: "100%",
+      maxWidth: "420px",
+      borderRadius: "4px",
+      border: "1px solid #444",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.3)"
+    }
+  })))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setLabelImages([]);
+      setPdfUrl(null);
+    },
+    style: {
+      marginTop: "10px",
+      padding: "6px 16px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#333",
+      color: "#aaa",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u6536\u8D77")), filteredOrders.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      color: "#555",
+      padding: "30px",
+      fontSize: "14px"
+    }
+  }, orders.length === 0 ? "尚無訂單" : "查無結果") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    }
+  }, filteredOrders.map(o => /*#__PURE__*/React.createElement("div", {
+    key: o.id,
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "10px",
+      padding: "12px",
+      border: `1px solid ${selectedIds.has(o.id) ? "#00D4AA" : o.status === "picked" ? "#28a745" : "#333"}`,
+      transition: "border 0.2s"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: "10px",
+      marginBottom: "6px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: () => toggleSelect(o.id),
+    style: {
+      width: "22px",
+      height: "22px",
+      borderRadius: "4px",
+      flexShrink: 0,
+      border: `2px solid ${selectedIds.has(o.id) ? "#00D4AA" : "#555"}`,
+      background: selectedIds.has(o.id) ? "#00D4AA" : "transparent",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "pointer",
+      transition: "all 0.15s"
+    }
+  }, selectedIds.has(o.id) && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#0D0D0D",
+      fontSize: "14px",
+      fontWeight: 900
+    }
+  }, "\u2713")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#fff",
+      fontSize: "14px",
+      fontWeight: 700
+    }
+  }, o.name), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#888",
+      fontSize: "12px",
+      marginLeft: "8px"
+    }
+  }, o.phone)), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: "11px",
+      padding: "3px 8px",
+      borderRadius: "6px",
+      background: o.status === "picked" ? "#28a74520" : "#00D4AA20",
+      color: o.status === "picked" ? "#28a745" : "#00D4AA",
+      fontWeight: 600
+    }
+  }, o.status === "picked" ? "✓ 已取" : "⏳ 未取")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "12px",
+      color: "#888",
+      marginBottom: "6px"
+    }
+  }, "#", o.orderNo || o.id, " \u30FB ", (function(t) { try { var d = new Date(t); return isNaN(d) ? t : d.toLocaleString("zh-TW"); } catch(e) { return t; } })(o.time)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "12px",
+      color: "#ccc",
+      marginBottom: "8px"
+    }
+  }, Object.entries(o.items).map(([fid, qty]) => {
+    const fl = FLAVORS.find(f => f.id === fid);
+    return `${fl?.emoji}${fl?.name}×${qty}`;
+  }).join("  ")), o.pickupDate && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "12px",
+      color: "#00D4AA",
+      marginBottom: "6px",
+      fontWeight: 600
+    }
+  }, "\uD83D\uDCC5 \u53D6\u8CA8\u65E5\u671F\uFF1A", o.pickupDate), o.referrer && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "12px",
+      color: "#aaa",
+      marginBottom: "6px"
+    }
+  }, "\uD83D\uDC64 \u63A8\u85A6\u4EBA\uFF1A", o.referrer), o.note && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: "12px",
+      color: "#aaa",
+      marginBottom: "8px",
+      padding: "6px 10px",
+      background: "#ffffff08",
+      borderRadius: "6px",
+      borderLeft: "3px solid #00D4AA"
+    }
+  }, "\uD83D\uDCDD \u5BA2\u4EBA\u5099\u8A3B\uFF1A", o.note), editingNoteId === o.id ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: "8px",
+      display: "flex",
+      gap: "6px"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: editingNoteText,
+    onChange: e => setEditingNoteText(e.target.value),
+    placeholder: "\u8F38\u5165\u9580\u5E02\u5099\u8A3B...",
+    autoFocus: true,
+    style: {
+      flex: 1,
+      padding: "8px 10px",
+      borderRadius: "6px",
+      border: "1px solid #00B4DC",
+      background: "#0D0D0D",
+      color: "#fff",
+      fontSize: "12px",
+      outline: "none",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    },
+    onKeyDown: e => {
+      if (e.key === "Enter") saveAdminNote(o.id, editingNoteText);
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => saveAdminNote(o.id, editingNoteText),
+    style: {
+      padding: "8px 12px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#00B4DC",
+      color: "#fff",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      whiteSpace: "nowrap"
+    }
+  }, "\u5132\u5B58"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setEditingNoteId(null);
+      setEditingNoteText("");
+    },
+    style: {
+      padding: "8px 10px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#333",
+      color: "#aaa",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u2715")) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: "8px"
+    }
+  }, o.adminNote ? /*#__PURE__*/React.createElement("div", {
+    onClick: () => {
+      setEditingNoteId(o.id);
+      setEditingNoteText(o.adminNote || "");
+    },
+    style: {
+      fontSize: "12px",
+      color: "#ff9f43",
+      padding: "6px 10px",
+      background: "#ff9f4310",
+      borderRadius: "6px",
+      borderLeft: "3px solid #00B4DC",
+      cursor: "pointer"
+    }
+  }, "\uD83C\uDFEA \u9580\u5E02\u5099\u8A3B\uFF1A", o.adminNote, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#666",
+      fontSize: "10px",
+      marginLeft: "6px"
+    }
+  }, "\u9EDE\u64CA\u7DE8\u8F2F")) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setEditingNoteId(o.id);
+      setEditingNoteText("");
+    },
+    style: {
+      padding: "5px 10px",
+      border: "1px dashed #444",
+      borderRadius: "6px",
+      background: "transparent",
+      color: "#666",
+      fontSize: "11px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "+ \u65B0\u589E\u9580\u5E02\u5099\u8A3B")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#00D4AA",
+      fontSize: "14px",
+      fontWeight: 700
+    }
+  }, o.total, "\u652F \u30FB $", o.amount), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "6px"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => toggleStatus(o.id),
+    style: {
+      padding: "6px 12px",
+      border: "none",
+      borderRadius: "6px",
+      background: o.status === "picked" ? "#333" : "#28a745",
+      color: "#fff",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, o.status === "picked" ? "取消取貨" : "標記已取"), confirmDeleteId === o.id ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => deleteOrder(o.id),
+    style: {
+      padding: "6px 12px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#ff4444",
+      color: "#fff",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u78BA\u5B9A\u522A\u9664"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setConfirmDeleteId(null),
+    style: {
+      padding: "6px 10px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#333",
+      color: "#aaa",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u53D6\u6D88")) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => setConfirmDeleteId(o.id),
+    style: {
+      padding: "6px 12px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#ff444430",
+      color: "#ff4444",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u522A\u9664"))))))), tab === "stock" && /*#__PURE__*/React.createElement("div", null, editStock && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: "12px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#888",
+      fontSize: "11px",
+      marginBottom: "6px"
+    }
+  }, "\u5FEB\u901F\u8A2D\u5B9A\u6BCF\u500B\u53E3\u5473\uFF1A"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "6px",
+      flexWrap: "wrap"
+    }
+  }, [10, 20, 30, 50].map(n => /*#__PURE__*/React.createElement("button", {
+    key: n,
+    onClick: () => {
+      const filled = {};
+      FLAVORS.forEach(f => {
+        filled[f.id] = n;
+      });
+      setEditStock(filled);
+    },
+    style: {
+      padding: "6px 14px",
+      border: "1px solid #444",
+      borderRadius: "6px",
+      background: "#1A1A1A",
+      color: "#00D4AA",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u6BCF\u7A2E ", n, " \u652F")))), editStock && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#00D4AA10",
+      border: "1px solid #00D4AA30",
+      borderRadius: "8px",
+      padding: "10px",
+      marginBottom: "12px",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#00D4AA",
+      fontSize: "14px",
+      fontWeight: 700
+    }
+  }, "\u5408\u8A08\uFF1A", Object.values(editStock).reduce((a, b) => a + b, 0), " \u652F")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    }
+  }, FLAVORS.map(f => {
+    const current = editStock ? editStock[f.id] : stock[f.id];
+    // Calculate sold for this flavor from orders
+    const soldForFlavor = orders.reduce((sum, o) => sum + (o.items[f.id] || 0), 0);
+    return /*#__PURE__*/React.createElement("div", {
+      key: f.id,
+      style: {
+        background: "#1A1A1A",
+        borderRadius: "10px",
+        padding: "12px",
+        border: "1px solid #333",
+        display: "flex",
+        alignItems: "center",
+        gap: "10px"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: "24px"
+      }
+    }, f.emoji), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: "#fff",
+        fontSize: "13px",
+        fontWeight: 500
+      }
+    }, f.name), /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: "#888",
+        fontSize: "11px"
+      }
+    }, "\u5269 ", stock[f.id], " \u652F \u30FB \u5DF2\u552E ", soldForFlavor, " \u652F"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        height: "3px",
+        background: "#333",
+        borderRadius: "2px",
+        marginTop: "4px"
+      }
+    }, (() => {
+      const totalForFlavor = (stock[f.id] || 0) + soldForFlavor;
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          width: `${totalForFlavor > 0 ? soldForFlavor / totalForFlavor * 100 : 0}%`,
+          height: "100%",
+          background: stock[f.id] <= 0 && soldForFlavor > 0 ? "#ff4444" : "#00D4AA",
+          borderRadius: "2px",
+          transition: "width 0.3s"
+        }
+      });
+    })())), editStock ? /*#__PURE__*/React.createElement("input", {
+      type: "tel",
+      inputMode: "numeric",
+      pattern: "[0-9]*",
+      value: current,
+      onChange: e => {
+        const val = e.target.value.replace(/\D/g, "");
+        setEditStock(s => ({
+          ...s,
+          [f.id]: val === "" ? 0 : parseInt(val)
+        }));
+      },
+      onFocus: e => e.target.select(),
+      style: {
+        width: "64px",
+        padding: "8px",
+        borderRadius: "6px",
+        border: "1px solid #00D4AA",
+        background: "#0D0D0D",
+        color: "#00D4AA",
+        fontSize: "16px",
+        textAlign: "center",
+        fontFamily: "'Noto Sans TC', sans-serif",
+        outline: "none"
+      }
+    }) : /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: stock[f.id] <= 0 ? "#ff4444" : "#00D4AA",
+        fontSize: "18px",
+        fontWeight: 700,
+        minWidth: "40px",
+        textAlign: "right"
+      }
+    }, current));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "8px",
+      marginTop: "14px"
+    }
+  }, editStock ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (!editStock) return;
+      const s = {
+        ...editStock
+      };
+      setEditStock(null);
+      saveStock(s);
+    },
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#28a745",
+      color: "#fff",
+      fontSize: "14px",
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u5132\u5B58\u8B8A\u66F4"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditStock(null),
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#333",
+      color: "#fff",
+      fontSize: "14px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u53D6\u6D88")) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditStock({
+      ...stock
+    }),
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#00B4DC",
+      color: "#fff",
+      fontSize: "14px",
+      fontWeight: 700,
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u270F\uFE0F \u7DE8\u8F2F\u5EAB\u5B58"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "10px",
+      marginTop: "20px"
+    }
+  }, showExportPanel && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#1A1A1A",
+      borderRadius: "10px",
+      padding: "12px",
+      border: "1px solid #333"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#888",
+      fontSize: "11px",
+      marginBottom: "6px"
+    }
+  }, "\u5168\u9078\u4E0B\u65B9\u6587\u5B57 \u2192 \u8907\u88FD \u2192 \u8CBC\u5230 Google \u8A66\u7B97\u8868"), /*#__PURE__*/React.createElement("textarea", {
+    readOnly: true,
+    value: generateTSV(),
+    onFocus: e => e.target.select(),
+    style: {
+      width: "100%",
+      boxSizing: "border-box",
+      minHeight: "120px",
+      padding: "10px",
+      borderRadius: "6px",
+      border: "1px solid #444",
+      background: "#0D0D0D",
+      color: "#ccc",
+      fontSize: "11px",
+      fontFamily: "monospace",
+      resize: "vertical",
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowExportPanel(false),
+    style: {
+      marginTop: "8px",
+      padding: "6px 12px",
+      border: "none",
+      borderRadius: "6px",
+      background: "#333",
+      color: "#aaa",
+      fontSize: "12px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u6536\u8D77")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: "8px"
+    }
+  }, confirmReset ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: resetAll,
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "none",
+      borderRadius: "8px",
+      background: "#ff4444",
+      color: "#fff",
+      fontSize: "13px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif",
+      fontWeight: 700
+    }
+  }, "\u78BA\u5B9A\u91CD\u7F6E"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setConfirmReset(false),
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "1px solid #333",
+      borderRadius: "8px",
+      background: "transparent",
+      color: "#888",
+      fontSize: "13px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\u53D6\u6D88")) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => setConfirmReset(true),
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "1px solid #ff444440",
+      borderRadius: "8px",
+      background: "transparent",
+      color: "#ff4444",
+      fontSize: "13px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\uD83D\uDDD1 \u91CD\u7F6E\u5168\u90E8"), /*#__PURE__*/React.createElement("button", {
+    onClick: onLogout,
+    style: {
+      flex: 1,
+      padding: "12px",
+      border: "1px solid #333",
+      borderRadius: "8px",
+      background: "transparent",
+      color: "#888",
+      fontSize: "13px",
+      cursor: "pointer",
+      fontFamily: "'Noto Sans TC', sans-serif"
+    }
+  }, "\uD83D\uDD12 \u8FD4\u56DE\u5BA2\u6236\u7AEF"))));
+}
+// Error boundary
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+  static getDerivedStateFromError(error) { return { hasError: true, error: error }; }
+  render() {
+    if (this.state.hasError) {
+      return React.createElement("div", { style: { padding: "40px", color: "#ff6b6b", textAlign: "center", fontFamily: "sans-serif" } },
+        React.createElement("h2", null, "發生錯誤"),
+        React.createElement("p", { style: { color: "#aaa", fontSize: "12px", wordBreak: "break-all" } }, String(this.state.error))
+      );
+    }
+    return this.props.children;
+  }
+}
+
+try {
+  var root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(React.createElement(ErrorBoundary, null, React.createElement(App)));
+} catch(e) {
+  document.getElementById('root').innerHTML = '<div style="padding:40px;color:#ff6b6b;text-align:center;font-family:sans-serif"><h2>JS Error</h2><p style="color:#aaa;font-size:12px;word-break:break-all">' + String(e) + '</p></div>';
+}
+</script>
+</body>
+</html>
