@@ -1233,34 +1233,62 @@ function AdminView({
   const totalRevenue = orders.reduce((sum, o) => sum + o.amount, 0);
   const totalUnits = orders.reduce((sum, o) => sum + o.total, 0);
   const toggleStatus = orderId => {
-    const newOrders = orders.map(o => o.id === orderId ? {
-      ...o,
-      status: o.status === "pending" ? "picked" : "pending"
-    } : o);
-    saveOrders(newOrders);
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    const newStatus = order.status === "pending" ? "picked" : "pending";
+    const newOrders = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
+    setOrders(newOrders);
+    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+
+    gasCall({
+      action: "updateOrderStatus",
+      orderNo: order.orderNo,
+      status: newStatus
+    }).then(function() { loadData(); }).catch(function(e) { console.error(e); loadData(); });
   };
   const deleteOrder = orderId => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    const newStock = {
-      ...stock
-    };
+
+    // Update UI immediately
+    const newStock = { ...stock };
     for (const [fid, qty] of Object.entries(order.items)) {
       newStock[fid] = (newStock[fid] || 0) + qty;
     }
     const newOrders = orders.filter(o => o.id !== orderId);
     setConfirmDeleteId(null);
-    saveStock(newStock);
-    saveOrders(newOrders);
+    setStock(newStock);
+    setOrders(newOrders);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e) {}
+    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+
+    // Send lightweight delete to GAS (only orderNo)
+    gasCall({
+      action: "deleteOrder",
+      orderNo: order.orderNo
+    }).then(function(res) {
+      if (res && res.ok) {
+        // Sync back the authoritative data from GAS
+        if (res.stock) { setStock(res.stock); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(res.stock)); } catch(e) {} }
+        if (res.orders) { setOrders(res.orders); try { localStorage.setItem(ORDERS_KEY, JSON.stringify(res.orders)); } catch(e) {} }
+      }
+      loadData();
+    }).catch(function(e) { console.error("deleteOrder GAS error:", e); loadData(); });
   };
   const saveAdminNote = (orderId, noteText) => {
-    const newOrders = orders.map(o => o.id === orderId ? {
-      ...o,
-      adminNote: noteText.trim()
-    } : o);
-    saveOrders(newOrders);
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    const newOrders = orders.map(o => o.id === orderId ? { ...o, adminNote: noteText.trim() } : o);
+    setOrders(newOrders);
+    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
     setEditingNoteId(null);
     setEditingNoteText("");
+
+    gasCall({
+      action: "updateOrderNote",
+      orderNo: order.orderNo,
+      adminNote: noteText.trim()
+    }).then(function() { loadData(); }).catch(function(e) { console.error(e); loadData(); });
   };
   const handleStockSave = () => {
     if (!editStock) return;
@@ -1356,21 +1384,26 @@ function AdminView({
   const selectedOrders = orders.filter(o => selectedIds.has(o.id));
   const batchDelete = () => {
     const ids = new Set(selectedIds);
-    const newStock = {
-      ...stock
-    };
-    orders.forEach(o => {
-      if (ids.has(o.id)) {
-        Object.entries(o.items).forEach(([fid, qty]) => {
-          newStock[fid] = (newStock[fid] || 0) + qty;
-        });
-      }
+    const toDelete = orders.filter(o => ids.has(o.id));
+    const newStock = { ...stock };
+    toDelete.forEach(o => {
+      Object.entries(o.items).forEach(([fid, qty]) => {
+        newStock[fid] = (newStock[fid] || 0) + qty;
+      });
     });
     const newOrders = orders.filter(o => !ids.has(o.id));
     setSelectedIds(new Set());
     setBatchConfirmDelete(false);
-    saveStock(newStock);
-    saveOrders(newOrders);
+    setStock(newStock);
+    setOrders(newOrders);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e) {}
+    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+
+    // Send individual delete calls to GAS
+    var deletePromises = toDelete.map(function(o) {
+      return gasCall({ action: "deleteOrder", orderNo: o.orderNo });
+    });
+    Promise.all(deletePromises).then(function() { loadData(); }).catch(function() { loadData(); });
   };
 
   // Generate batch print image - matches customer receipt style
