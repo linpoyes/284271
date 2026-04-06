@@ -1238,49 +1238,62 @@ function AdminView({
   const totalRevenue = orders.reduce((sum, o) => sum + o.amount, 0);
   const totalUnits = orders.reduce((sum, o) => sum + o.total, 0);
   const toggleStatus = orderId => {
-    const order = orders.find(o => o.id === orderId);
-    alert("[DEBUG] toggleStatus called\norderId: " + orderId + "\nfound: " + (order ? order.orderNo : "NOT FOUND"));
-    if (!order) return;
-    const newStatus = order.status === "pending" ? "picked" : "pending";
-    const newOrders = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
-    setOrders(newOrders);
-    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const newStatus = order.status === "pending" ? "picked" : "pending";
+      const newOrders = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
+      setOrders(newOrders);
+      try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
 
-    gasCall({
-      action: "updateOrderStatus",
-      orderNo: order.orderNo,
-      status: newStatus
-    }).then(function() { loadData(); }).catch(function(e) { console.error(e); loadData(); });
+      gasCall({
+        action: "updateOrderStatus",
+        orderNo: order.orderNo,
+        status: newStatus
+      }).then(function(res) {
+        if (res && !res.ok) alert("標記失敗: " + JSON.stringify(res));
+        loadData();
+      }).catch(function(e) { alert("標記錯誤: " + e); loadData(); });
+    } catch(err) {
+      alert("toggleStatus 錯誤: " + err.message);
+    }
   };
   const deleteOrder = orderId => {
-    var order = orders.find(o => o.id === orderId);
-    alert("[DEBUG] deleteOrder called\norderId: " + orderId + "\nfound: " + (order ? order.orderNo : "NOT FOUND") + "\norders count: " + orders.length + "\nfirst order id: " + (orders[0] ? orders[0].id : "none"));
-    if (!order) return;
+    try {
+      var order = orders.find(o => o.id === orderId);
+      if (!order) { alert("找不到訂單: " + orderId); return; }
 
-    // Update UI immediately
-    const newStock = { ...stock };
-    for (const [fid, qty] of Object.entries(order.items)) {
-      newStock[fid] = (newStock[fid] || 0) + qty;
-    }
-    const newOrders = orders.filter(o => o.id !== orderId);
-    setConfirmDeleteId(null);
-    setStock(newStock);
-    setOrders(newOrders);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e) {}
-    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
-
-    // Send lightweight delete to GAS (only orderNo)
-    gasCall({
-      action: "deleteOrder",
-      orderNo: order.orderNo
-    }).then(function(res) {
-      if (res && res.ok) {
-        // Sync back the authoritative data from GAS
-        if (res.stock) { setStock(res.stock); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(res.stock)); } catch(e) {} }
-        if (res.orders) { setOrders(res.orders); try { localStorage.setItem(ORDERS_KEY, JSON.stringify(res.orders)); } catch(e) {} }
+      // Update UI immediately
+      const newStock = { ...stock };
+      var itemEntries = Object.entries(order.items || {});
+      for (var k = 0; k < itemEntries.length; k++) {
+        var fid = itemEntries[k][0];
+        var qty = itemEntries[k][1];
+        newStock[fid] = (newStock[fid] || 0) + qty;
       }
-      loadData();
-    }).catch(function(e) { console.error("deleteOrder GAS error:", e); loadData(); });
+      const newOrders = orders.filter(o => o.id !== orderId);
+      setConfirmDeleteId(null);
+      setStock(newStock);
+      setOrders(newOrders);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e) {}
+      try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+
+      // Send lightweight delete to GAS (only orderNo)
+      gasCall({
+        action: "deleteOrder",
+        orderNo: order.orderNo
+      }).then(function(res) {
+        if (res && res.ok) {
+          if (res.stock) { setStock(res.stock); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(res.stock)); } catch(e) {} }
+          if (res.orders) { setOrders(res.orders); try { localStorage.setItem(ORDERS_KEY, JSON.stringify(res.orders)); } catch(e) {} }
+        } else {
+          alert("GAS 刪除失敗: " + JSON.stringify(res));
+        }
+        loadData();
+      }).catch(function(e) { alert("GAS 刪除錯誤: " + e); loadData(); });
+    } catch(err) {
+      alert("deleteOrder 錯誤: " + err.message);
+    }
   };
   const saveAdminNote = (orderId, noteText) => {
     const order = orders.find(o => o.id === orderId);
