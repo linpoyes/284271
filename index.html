@@ -1239,6 +1239,7 @@ function AdminView({
   const totalUnits = orders.reduce((sum, o) => sum + o.total, 0);
   const toggleStatus = orderId => {
     const order = orders.find(o => o.id === orderId);
+    alert("[DEBUG] toggleStatus called\norderId: " + orderId + "\nfound: " + (order ? order.orderNo : "NOT FOUND"));
     if (!order) return;
     const newStatus = order.status === "pending" ? "picked" : "pending";
     const newOrders = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
@@ -1252,9 +1253,8 @@ function AdminView({
     }).then(function() { loadData(); }).catch(function(e) { console.error(e); loadData(); });
   };
   const deleteOrder = orderId => {
-    console.log("[DELETE] orderId:", orderId, "orders count:", orders.length);
-    const order = orders.find(o => o.id === orderId);
-    console.log("[DELETE] found order:", order ? order.orderNo : "NOT FOUND");
+    var order = orders.find(o => o.id === orderId);
+    alert("[DEBUG] deleteOrder called\norderId: " + orderId + "\nfound: " + (order ? order.orderNo : "NOT FOUND") + "\norders count: " + orders.length + "\nfirst order id: " + (orders[0] ? orders[0].id : "none"));
     if (!order) return;
 
     // Update UI immediately
