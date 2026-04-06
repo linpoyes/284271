@@ -1257,28 +1257,18 @@ function AdminView({
   const deleteOrder = orderId => {
     try {
       var order = orders.find(o => o.id === orderId);
-      if (!order) { alert("找不到訂單: " + orderId); return; }
+      if (!order) return;
 
-      // Update UI immediately
-      const newStock = { ...stock };
-      var itemEntries = Object.entries(order.items || {});
-      for (var k = 0; k < itemEntries.length; k++) {
-        var fid = itemEntries[k][0];
-        var qty = itemEntries[k][1];
-        newStock[fid] = (newStock[fid] || 0) + qty;
-      }
+      // Remove from UI immediately (don't adjust stock - GAS will handle it)
       const newOrders = orders.filter(o => o.id !== orderId);
       setConfirmDeleteId(null);
-      saveStock(newStock);
       saveOrders(newOrders);
 
-      // Send lightweight delete to GAS (only orderNo)
+      // Send delete to GAS - it handles stock adjustment
       gasCall({
         action: "deleteOrder",
         orderNo: order.orderNo
-      }).then(function(res) {
-        loadData();
-      }).catch(function(e) { loadData(); });
+      }).then(function() { loadData(); }).catch(function() { loadData(); });
     } catch(err) {
       alert("deleteOrder 錯誤: " + err.message);
     }
@@ -1392,19 +1382,12 @@ function AdminView({
   const batchDelete = () => {
     const ids = new Set(selectedIds);
     const toDelete = orders.filter(o => ids.has(o.id));
-    const newStock = { ...stock };
-    toDelete.forEach(o => {
-      Object.entries(o.items).forEach(([fid, qty]) => {
-        newStock[fid] = (newStock[fid] || 0) + qty;
-      });
-    });
     const newOrders = orders.filter(o => !ids.has(o.id));
     setSelectedIds(new Set());
     setBatchConfirmDelete(false);
-    saveStock(newStock);
     saveOrders(newOrders);
 
-    // Send individual delete calls to GAS
+    // Send individual delete calls to GAS - it handles stock adjustment
     var deletePromises = toDelete.map(function(o) {
       return gasCall({ action: "deleteOrder", orderNo: o.orderNo });
     });
