@@ -1243,17 +1243,13 @@ function AdminView({
       if (!order) return;
       const newStatus = order.status === "pending" ? "picked" : "pending";
       const newOrders = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
-      setOrders(newOrders);
-      try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+      saveOrders(newOrders);
 
       gasCall({
         action: "updateOrderStatus",
         orderNo: order.orderNo,
         status: newStatus
-      }).then(function(res) {
-        if (res && !res.ok) alert("標記失敗: " + JSON.stringify(res));
-        loadData();
-      }).catch(function(e) { alert("標記錯誤: " + e); loadData(); });
+      }).then(function() { loadData(); }).catch(function() { loadData(); });
     } catch(err) {
       alert("toggleStatus 錯誤: " + err.message);
     }
@@ -1273,24 +1269,16 @@ function AdminView({
       }
       const newOrders = orders.filter(o => o.id !== orderId);
       setConfirmDeleteId(null);
-      setStock(newStock);
-      setOrders(newOrders);
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e) {}
-      try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+      saveStock(newStock);
+      saveOrders(newOrders);
 
       // Send lightweight delete to GAS (only orderNo)
       gasCall({
         action: "deleteOrder",
         orderNo: order.orderNo
       }).then(function(res) {
-        if (res && res.ok) {
-          if (res.stock) { setStock(res.stock); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(res.stock)); } catch(e) {} }
-          if (res.orders) { setOrders(res.orders); try { localStorage.setItem(ORDERS_KEY, JSON.stringify(res.orders)); } catch(e) {} }
-        } else {
-          alert("GAS 刪除失敗: " + JSON.stringify(res));
-        }
         loadData();
-      }).catch(function(e) { alert("GAS 刪除錯誤: " + e); loadData(); });
+      }).catch(function(e) { loadData(); });
     } catch(err) {
       alert("deleteOrder 錯誤: " + err.message);
     }
@@ -1299,8 +1287,7 @@ function AdminView({
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
     const newOrders = orders.map(o => o.id === orderId ? { ...o, adminNote: noteText.trim() } : o);
-    setOrders(newOrders);
-    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+    saveOrders(newOrders);
     setEditingNoteId(null);
     setEditingNoteText("");
 
@@ -1414,10 +1401,8 @@ function AdminView({
     const newOrders = orders.filter(o => !ids.has(o.id));
     setSelectedIds(new Set());
     setBatchConfirmDelete(false);
-    setStock(newStock);
-    setOrders(newOrders);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newStock)); } catch(e) {}
-    try { localStorage.setItem(ORDERS_KEY, JSON.stringify(newOrders)); } catch(e) {}
+    saveStock(newStock);
+    saveOrders(newOrders);
 
     // Send individual delete calls to GAS
     var deletePromises = toDelete.map(function(o) {
