@@ -2217,67 +2217,14 @@ function AdminView({
       borderRadius: "6px",
       borderLeft: "3px solid #00D4AA"
     }
-  }, "\uD83D\uDCDD \u5BA2\u4EBA\u5099\u8A3B\uFF1A", o.note), editingNoteId === o.id ? /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: "8px",
-      display: "flex",
-      gap: "6px"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    value: editingNoteText,
-    onChange: e => setEditingNoteText(e.target.value),
-    placeholder: "\u8F38\u5165\u9580\u5E02\u5099\u8A3B...",
-    autoFocus: true,
-    style: {
-      flex: 1,
-      padding: "8px 10px",
-      borderRadius: "6px",
-      border: "1px solid #00B4DC",
-      background: "#0D0D0D",
-      color: "#fff",
-      fontSize: "12px",
-      outline: "none",
-      fontFamily: "'Noto Sans TC', sans-serif"
-    },
-    onKeyDown: e => {
-      if (e.key === "Enter") saveAdminNote(o.id, editingNoteText);
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => saveAdminNote(o.id, editingNoteText),
-    style: {
-      padding: "8px 12px",
-      border: "none",
-      borderRadius: "6px",
-      background: "#00B4DC",
-      color: "#fff",
-      fontSize: "12px",
-      cursor: "pointer",
-      fontFamily: "'Noto Sans TC', sans-serif",
-      whiteSpace: "nowrap"
-    }
-  }, "\u5132\u5B58"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setEditingNoteId(null);
-      setEditingNoteText("");
-    },
-    style: {
-      padding: "8px 10px",
-      border: "none",
-      borderRadius: "6px",
-      background: "#333",
-      color: "#aaa",
-      fontSize: "12px",
-      cursor: "pointer",
-      fontFamily: "'Noto Sans TC', sans-serif"
-    }
-  }, "\u2715")) : /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCDD \u5BA2\u4EBA\u5099\u8A3B\uFF1A", o.note), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: "8px"
     }
   }, o.adminNote ? /*#__PURE__*/React.createElement("div", {
     onClick: () => {
-      setEditingNoteId(o.id);
-      setEditingNoteText(o.adminNote || "");
+      var input = prompt("編輯門市備註：", o.adminNote || "");
+      if (input !== null) saveAdminNote(o.id, input);
     },
     style: {
       fontSize: "12px",
@@ -2296,8 +2243,8 @@ function AdminView({
     }
   }, "\u9EDE\u64CA\u7DE8\u8F2F")) : /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      setEditingNoteId(o.id);
-      setEditingNoteText("");
+      var input = prompt("輸入門市備註：", "");
+      if (input !== null && input.trim() !== "") saveAdminNote(o.id, input);
     },
     style: {
       padding: "5px 10px",
