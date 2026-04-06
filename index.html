@@ -149,9 +149,14 @@ function App() {
     fetchData().then(function(data) {
       if (data && data.ok) {
         setStock(data.stock && Object.keys(data.stock).length > 0 ? data.stock : getInitialStock());
-        setOrders(data.orders || []);
+        // Ensure every order has an id
+        var ordersWithId = (data.orders || []).map(function(o, idx) {
+          if (!o.id) o.id = "gas_" + (o.orderNo || idx) + "_" + idx;
+          return o;
+        });
+        setOrders(ordersWithId);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data.stock)); } catch(e) {}
-        try { localStorage.setItem(ORDERS_KEY, JSON.stringify(data.orders)); } catch(e) {}
+        try { localStorage.setItem(ORDERS_KEY, JSON.stringify(ordersWithId)); } catch(e) {}
       } else {
         // GAS failed - fallback to localStorage
         try { var s = localStorage.getItem(STORAGE_KEY); if (s) setStock(JSON.parse(s)); } catch(e) {}
@@ -1247,7 +1252,9 @@ function AdminView({
     }).then(function() { loadData(); }).catch(function(e) { console.error(e); loadData(); });
   };
   const deleteOrder = orderId => {
+    console.log("[DELETE] orderId:", orderId, "orders count:", orders.length);
     const order = orders.find(o => o.id === orderId);
+    console.log("[DELETE] found order:", order ? order.orderNo : "NOT FOUND");
     if (!order) return;
 
     // Update UI immediately
