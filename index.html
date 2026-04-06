@@ -136,13 +136,9 @@ function getInitialStock() {
 // --- Main App ---
 function App() {
   const [mode, setMode] = useState("customer");
-  const [stock, setStock] = useState(function() {
-    try { var s = localStorage.getItem(STORAGE_KEY); return s ? JSON.parse(s) : getInitialStock(); } catch(e) { return getInitialStock(); }
-  });
-  const [orders, setOrders] = useState(function() {
-    try { var o = localStorage.getItem(ORDERS_KEY); return o ? JSON.parse(o) : []; } catch(e) { return []; }
-  });
-  const [loading, setLoading] = useState(false);
+  const [stock, setStock] = useState(getInitialStock());
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState(false);
   const [tapCount, setTapCount] = useState(0);
@@ -156,8 +152,18 @@ function App() {
         setOrders(data.orders || []);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data.stock)); } catch(e) {}
         try { localStorage.setItem(ORDERS_KEY, JSON.stringify(data.orders)); } catch(e) {}
+      } else {
+        // GAS failed - fallback to localStorage
+        try { var s = localStorage.getItem(STORAGE_KEY); if (s) setStock(JSON.parse(s)); } catch(e) {}
+        try { var o = localStorage.getItem(ORDERS_KEY); if (o) setOrders(JSON.parse(o)); } catch(e) {}
       }
-    }).catch(function(e) { console.warn("GAS sync failed:", e); });
+      setLoading(false);
+    }).catch(function(e) {
+      console.warn("GAS sync failed:", e);
+      try { var s = localStorage.getItem(STORAGE_KEY); if (s) setStock(JSON.parse(s)); } catch(e2) {}
+      try { var o = localStorage.getItem(ORDERS_KEY); if (o) setOrders(JSON.parse(o)); } catch(e2) {}
+      setLoading(false);
+    });
   }, []);
   useEffect(function() {
     loadData();
